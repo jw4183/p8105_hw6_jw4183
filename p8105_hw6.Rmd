@@ -1,0 +1,181 @@
+---
+title: "P8105 HW6"
+author: "Jiacheng Wu"
+date: "12/1/2021"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(modelr)
+library(mgcv)
+library(viridis)
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+```
+
+## Problem 1
+
+Read in and tidy data
+
+```{r, message=FALSE}
+birthweight_df = read_csv ("./birthweight.csv") %>% 
+  mutate(babysex = factor(recode(babysex, `1` = "male", `2` = "female"))) %>% 
+  mutate(mrace = factor(recode(mrace, `1`="White",`2` = "Black", `3` = "Asian", 
+                                      `4` ="Putero Rican",`8`="other"))) %>% 
+  mutate(frace = factor(recode (frace, `1`="White",`2` = "Black", `3` = "Asian", 
+                                      `4` ="Putero Rican",`8`="other", `9` = "Unknown"))) 
+  
+```
+
+Propose model
+
+```{r}
+fit1 = lm(bwt ~ delwt, data = birthweight_df)
+```
+
+```{r, message=FALSE}
+birthweight_df %>% 
+  select(bwt, delwt) %>% 
+  add_predictions(fit1) %>% 
+  add_residuals(fit1) %>% 
+  ggplot(aes(x = delwt, y = resid)) +
+  geom_violin()
+```
+
+Compare models using cross validation
+
+```{r, message=FALSE}
+cv_df = 
+  crossv_mc(birthweight_df, 100) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  ) %>% 
+  mutate(
+    fit1 = map(train, ~lm(bwt ~ delwt, data = .x)),
+    fit2 = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    fit3 = map(train, ~lm(bwt ~ bhead + blength + babysex + bhead*blength + bhead*babysex + blength*babysex + 
+                                   bhead*blength*babysex, data = .x))) %>% 
+    mutate(
+   rmse1 = map2_dbl(fit1, test, ~rmse(model = .x, data = .y)),
+   rmse2 = map2_dbl(fit2, test, ~rmse(model = .x, data = .y)),
+   rmse3 = map2_dbl(fit3, test, ~rmse(model = .x, data = .y)))
+```
+
+Visualizing
+
+```{r, message=FALSE}
+cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) %>% 
+  ggplot(aes(x = model, y = rmse)) +
+  geom_boxplot()
+```
+
+Based on the visualization of the three models, we conclude that `fit3` is the best model as it has the lowest rsme. 
+
+
+
+## Problem 2
+
+Downloda data
+
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+
+```{r}
+boot_sample = function(df) {
+  
+  sample_frac(df, replace = TRUE)
+  
+}
+```
+
+
+
+Bootstraping
+
+```{r}
+boot_strap_df = 
+  tibble(strap_number = 1:5000,
+         strap_sample = rerun(5000, boot_sample(weather_df))
+         )
+```
+
+```{r, message=FALSE}
+rsquare_results = boot_strap_df %>% 
+  mutate(
+    models = map(strap_sample, ~lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::glance)) %>% 
+  select(strap_number, results) %>% 
+  unnest(results)
+
+rsquare_results %>% 
+  ggplot(aes(x = r.squared)) + geom_density()
+```
+
+The distribution of r.squared has a heavy tail extending to low values, so there could be large outliers are included in the bootstrap sample.
+
+
+```{r}
+CI = c(quantile(rsquare_results$r.squared, 0.025), quantile(rsquare_results$r.squared, 0.975))
+
+## The 95% confidence interval is 
+CI
+```
+
+
+```{r, message=FALSE}
+beta_results = boot_strap_df %>% 
+  mutate(
+    models = map(strap_sample, ~lm(tmax ~ tmin, data = .x) ),
+    beta_results = map(models, broom::tidy)) %>% 
+  select(strap_number, beta_results) %>% 
+  unnest(beta_results) %>% 
+  select(strap_number, term, estimate) %>% 
+  pivot_wider(names_from = term,
+              values_from = estimate) %>% 
+  mutate(log_beta = log(`(Intercept)` * tmin))
+
+beta_results %>% 
+  ggplot(aes(x = log_beta)) + geom_density()
+```
+
+The distribution of log(beta0 * beta) is approximately normal. 
+
+```{r}
+CI = c(quantile(beta_results$log_beta, 0.025), quantile(beta_results$log_beta, 0.975))
+
+## The 95% confidence interval is 
+CI
+```
+
